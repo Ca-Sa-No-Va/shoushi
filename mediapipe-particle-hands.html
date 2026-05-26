@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MediaPipe Hands Particle Field</title>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <style>
+    :root {
+      --ink: rgba(245, 250, 255, 0.92);
+      --muted: rgba(245, 250, 255, 0.58);
+      --panel: rgba(6, 9, 20, 0.58);
+      --line: rgba(255, 255, 255, 0.14);
+      --danger: #ff5c8a;
+      --ok: #55ffd7;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #000;
+      color: var(--ink);
+      font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+    }
+
+    .input-video,
+    #canvas {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    .input-video {
+      object-fit: cover;
+      transform: scaleX(-1);
+      opacity: 0;
+      filter: saturate(1.15) contrast(1.08);
+    }
+
+    #canvas {
+      z-index: 2;
+      display: block;
+      touch-action: none;
+    }
+
+    .vignette {
+      position: fixed;
+      inset: 0;
+      z-index: 3;
+      pointer-events: none;
+      display: none;
+    }
+
+    .hud {
+      position: fixed;
+      z-index: 4;
+      left: 24px;
+      top: 22px;
+      display: grid;
+      gap: 6px;
+      pointer-events: none;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(24px, 4vw, 58px);
+      line-height: 1;
+      letter-spacing: 0;
+      font-weight: 780;
+      text-shadow: 0 0 32px rgba(88, 255, 221, 0.28);
+    }
+
+    .hud p {
+      max-width: min(560px, calc(100vw - 48px));
+      margin: 0;
+      color: var(--muted);
+      font-size: clamp(13px, 1.4vw, 16px);
+      line-height: 1.5;
+    }
+
+    .status {
+      position: fixed;
+      z-index: 5;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      max-width: min(620px, calc(100vw - 40px));
+      padding: 16px 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--ink);
+      backdrop-filter: blur(18px);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.36);
+      font-size: 15px;
+      line-height: 1.55;
+      text-align: center;
+      transition: opacity 300ms ease, transform 300ms ease;
+    }
+
+    .status.hidden {
+      opacity: 0;
+      transform: translate(-50%, -48%);
+      pointer-events: none;
+    }
+
+    .status.error {
+      border-color: rgba(255, 92, 138, 0.42);
+      color: #ffe7ee;
+    }
+
+    .pill {
+      position: fixed;
+      z-index: 4;
+      left: 24px;
+      bottom: 22px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      max-width: calc(100vw - 48px);
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(6, 9, 20, 0.46);
+      color: var(--muted);
+      backdrop-filter: blur(18px);
+      font-size: 13px;
+      line-height: 1.35;
+      pointer-events: none;
+    }
+
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      background: var(--danger);
+      box-shadow: 0 0 18px rgba(255, 92, 138, 0.72);
+      flex: 0 0 auto;
+    }
+
+    .pill.ready .dot {
+      background: var(--ok);
+      box-shadow: 0 0 18px rgba(85, 255, 215, 0.78);
+    }
+
+    @media (max-width: 720px) {
+      .hud {
+        left: 16px;
+        top: 16px;
+      }
+
+      .pill {
+        left: 16px;
+        right: 16px;
+        bottom: 16px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <video class="input-video" playsinline muted autoplay></video>
+  <canvas id="canvas"></canvas>
+  <div class="vignette" aria-hidden="true"></div>
+
+  <div id="status" class="status">正在请求摄像头权限及加载 AI 模型...</div>
+  <div id="pill" class="pill">
+    <span class="dot"></span>
+    <span id="pillText">等待摄像头与手势模型</span>
+  </div>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const canvas = document.getElementById("canvas");
+      const ctx = canvas.getContext("2d", { alpha: true });
+      const video = document.querySelector(".input-video");
+      const status = document.getElementById("status");
+      const pill = document.getElementById("pill");
+      const pillText = document.getElementById("pillText");
+
+      const state = {
+        width: 0,
+        height: 0,
+        dpr: 1,
+        time: 0,
+        lastFrame: performance.now(),
+        particles: [],
+        ambientTarget: 0,
+        maxParticles: 1500,
+        handSeen: false,
+        modelReady: false,
+        targetX: 0,
+        targetY: 0,
+        rawX: 0,
+        rawY: 0,
+        prevX: 0,
+        prevY: 0,
+        velocityX: 0,
+        velocityY: 0,
+        speed: 0,
+        handHue: 155,
+        lastHandSeenAt: 0,
+        handGraceMs: 260,
+        lostFrames: 0,
+        resizeTimer: 0
+      };
+
+      class Particle {
+        constructor(options) {
+          this.reset(options);
+        }
+
+        reset(options = {}) {
+          this.x = options.x ?? Math.random() * state.width;
+          this.y = options.y ?? Math.random() * state.height;
+          this.vx = options.vx ?? (Math.random() - 0.5) * 0.7;
+          this.vy = options.vy ?? (Math.random() - 0.5) * 0.7;
+          this.ax = 0;
+          this.ay = 0;
+          this.life = options.life ?? options.maxLife ?? random(120, 260);
+          this.maxLife = options.maxLife ?? this.life;
+          this.radius = options.radius ?? random(1.2, 3.8);
+          this.baseRadius = this.radius;
+          this.hue = options.hue ?? random(145, 285);
+          this.friction = options.friction ?? 0.95;
+          this.spin = random(-0.04, 0.04);
+          this.drift = random(0.15, 0.55);
+          this.kind = options.kind ?? "ambient";
+        }
+
+        update() {
+          const age = 1 - this.life / this.maxLife;
+          const wave = Math.sin(state.time * 0.0016 + this.x * 0.012 + this.y * 0.008);
+          this.ax += Math.cos(wave + this.spin) * 0.012 * this.drift;
+          this.ay += Math.sin(wave - this.spin) * 0.012 * this.drift;
+
+          if (state.handSeen) {
+            const dx = this.x - state.targetX;
+            const dy = this.y - state.targetY;
+            const distance = Math.max(Math.hypot(dx, dy), 0.001);
+            if (distance < 148) {
+              const force = Math.pow(1 - distance / 148, 2) * (0.55 + Math.min(state.speed * 0.012, 2.2));
+              this.ax += (dx / distance) * force;
+              this.ay += (dy / distance) * force;
+            }
+
+            if (this.kind === "spark" && distance < 88) {
+              this.ax -= (dx / distance) * 0.05;
+              this.ay -= (dy / distance) * 0.05;
+            }
+          }
+
+          this.vx += this.ax;
+          this.vy += this.ay;
+          this.vx *= this.friction;
+          this.vy *= this.friction;
+          this.x += this.vx;
+          this.y += this.vy;
+          this.ax = 0;
+          this.ay = 0;
+          this.life -= this.kind === "ambient" ? 0.38 : 1;
+
+          if (this.kind === "ambient") {
+            if (this.x < -60) this.x = state.width + 60;
+            if (this.x > state.width + 60) this.x = -60;
+            if (this.y < -60) this.y = state.height + 60;
+            if (this.y > state.height + 60) this.y = -60;
+          }
+
+          return this.life > 0 && this.radius > 0 && age <= 1.2;
+        }
+
+        draw() {
+          const t = Math.max(this.life / this.maxLife, 0);
+          const eased = t * t * (3 - 2 * t);
+          const velocityHue = Math.min(Math.hypot(this.vx, this.vy) * 7, 70);
+          const hue = (this.hue + velocityHue + state.time * 0.018) % 360;
+          const radius = Math.max(this.baseRadius * (0.25 + eased * 0.95), 0.1);
+          const alpha = Math.min(0.92, eased * (this.kind === "ambient" ? 0.55 : 0.95));
+
+          const glow = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, radius * 5.5);
+          glow.addColorStop(0, `hsla(${hue}, 100%, 68%, ${alpha})`);
+          glow.addColorStop(0.28, `hsla(${hue}, 100%, 52%, ${alpha * 0.58})`);
+          glow.addColorStop(1, `hsla(${hue}, 100%, 46%, 0)`);
+
+          ctx.fillStyle = glow;
+          ctx.beginPath();
+          ctx.arc(this.x, this.y, radius * 5.5, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = `hsla(${hue + 18}, 100%, 82%, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(this.x, this.y, radius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      function random(min, max) {
+        return min + Math.random() * (max - min);
+      }
+
+      function clamp(value, min, max) {
+        return Math.min(Math.max(value, min), max);
+      }
+
+      function setStatus(message, isError = false, keepVisible = false) {
+        status.textContent = message;
+        status.classList.toggle("error", isError);
+        status.classList.toggle("hidden", !keepVisible && !isError);
+      }
+
+      function setPill(message, ready = false) {
+        pillText.textContent = message;
+        pill.classList.toggle("ready", ready);
+      }
+
+      function resizeNow() {
+        state.dpr = Math.min(window.devicePixelRatio || 1, 2);
+        state.width = window.innerWidth;
+        state.height = window.innerHeight;
+        canvas.width = Math.floor(state.width * state.dpr);
+        canvas.height = Math.floor(state.height * state.dpr);
+        canvas.style.width = `${state.width}px`;
+        canvas.style.height = `${state.height}px`;
+        ctx.setTransform(state.dpr, 0, 0, state.dpr, 0, 0);
+        ctx.globalCompositeOperation = "source-over";
+        ctx.fillStyle = "rgb(0, 0, 0)";
+        ctx.fillRect(0, 0, state.width, state.height);
+        if (!state.targetX && !state.targetY) {
+          state.targetX = state.rawX = state.prevX = state.width / 2;
+          state.targetY = state.rawY = state.prevY = state.height / 2;
+        }
+      }
+
+      function onResize() {
+        window.clearTimeout(state.resizeTimer);
+        state.resizeTimer = window.setTimeout(resizeNow, 140);
+      }
+
+      function spawnParticle(options) {
+        if (state.particles.length >= state.maxParticles) {
+          state.particles.shift();
+        }
+        state.particles.push(new Particle(options));
+      }
+
+      function spawnAmbient(count) {
+        for (let i = 0; i < count; i += 1) {
+          spawnParticle({
+            kind: "ambient",
+            maxLife: random(180, 420),
+            radius: random(1.0, 3.2),
+            hue: random(145, 285),
+            friction: 0.96
+          });
+        }
+      }
+
+      function spawnHandParticles() {
+        if (!state.handSeen) return;
+
+        const speedBoost = clamp(state.speed / 26, 0, 8);
+        const count = Math.floor(10 + speedBoost * 8);
+        const baseHue = state.handHue + Math.sin(state.time * 0.003) * 24;
+        const moveAngle = Math.atan2(state.velocityY, state.velocityX);
+
+        for (let i = 0; i < count; i += 1) {
+          const burst = Math.random();
+          const angle = speedBoost > 1.2 && burst > 0.28
+            ? moveAngle + Math.PI + random(-0.42, 0.42)
+            : random(0, Math.PI * 2);
+          const orbit = speedBoost > 1.2 ? random(2, 22 + speedBoost * 6) : random(4, 38);
+          const force = speedBoost > 1.2 ? random(3, 9 + speedBoost * 1.6) : random(0.8, 3.6);
+
+          spawnParticle({
+            kind: "spark",
+            x: state.targetX + Math.cos(angle) * orbit,
+            y: state.targetY + Math.sin(angle) * orbit,
+            vx: Math.cos(angle) * force + state.velocityX * random(0.05, 0.18),
+            vy: Math.sin(angle) * force + state.velocityY * random(0.05, 0.18),
+            maxLife: random(36, 96 + speedBoost * 14),
+            radius: random(0.7, 2.5 + speedBoost * 0.28),
+            hue: baseHue + random(-38, 46) + speedBoost * 6,
+            friction: 0.95
+          });
+        }
+
+        if (speedBoost > 1.8) {
+          for (let i = 0; i < Math.floor(speedBoost * 2); i += 1) {
+            const back = random(0, 1);
+            spawnParticle({
+              kind: "spark",
+              x: state.targetX - state.velocityX * back * 1.8 + random(-8, 8),
+              y: state.targetY - state.velocityY * back * 1.8 + random(-8, 8),
+              vx: -state.velocityX * random(0.05, 0.16) + random(-1.2, 1.2),
+              vy: -state.velocityY * random(0.05, 0.16) + random(-1.2, 1.2),
+              maxLife: random(62, 130),
+              radius: random(1.4, 4.2),
+              hue: baseHue + random(-22, 58),
+              friction: 0.95
+            });
+          }
+        }
+      }
+
+      function drawCore() {
+        if (!state.handSeen) return;
+
+        const pulse = 1 + Math.sin(state.time * 0.006) * 0.08;
+        const speedScale = clamp(state.speed / 18, 0, 3);
+        const r = (34 + speedScale * 18) * pulse;
+        const hue = state.handHue;
+
+        ctx.save();
+        ctx.globalCompositeOperation = "lighter";
+
+        const halo = ctx.createRadialGradient(state.targetX, state.targetY, 0, state.targetX, state.targetY, r * 5.2);
+        halo.addColorStop(0, `hsla(${hue}, 100%, 66%, 0.38)`);
+        halo.addColorStop(0.34, `hsla(${hue + 55}, 100%, 58%, 0.16)`);
+        halo.addColorStop(1, `hsla(${hue + 110}, 100%, 52%, 0)`);
+        ctx.fillStyle = halo;
+        ctx.beginPath();
+        ctx.arc(state.targetX, state.targetY, r * 5.2, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.translate(state.targetX, state.targetY);
+        ctx.rotate(state.time * 0.003);
+        for (let i = 0; i < 14; i += 1) {
+          const angle = (i / 14) * Math.PI * 2;
+          const len = r * random(0.82, 1.7);
+          ctx.strokeStyle = `hsla(${hue + i * 13}, 100%, 64%, 0.38)`;
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(angle) * r * 0.42, Math.sin(angle) * r * 0.42);
+          ctx.lineTo(Math.cos(angle) * len, Math.sin(angle) * len);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      function animate(now) {
+        const delta = Math.min(now - state.lastFrame, 34);
+        state.lastFrame = now;
+        state.time += delta;
+
+        ctx.globalCompositeOperation = "source-over";
+        ctx.fillStyle = "rgba(0, 0, 0, 0.12)";
+        ctx.fillRect(0, 0, state.width, state.height);
+
+        state.prevX = state.targetX;
+        state.prevY = state.targetY;
+        if (state.handSeen) {
+          state.targetX += (state.rawX - state.targetX) * 0.15;
+          state.targetY += (state.rawY - state.targetY) * 0.15;
+          state.lostFrames = 0;
+        } else {
+          state.lostFrames += 1;
+          const floatX = state.width * 0.5 + Math.cos(state.time * 0.00027) * state.width * 0.18;
+          const floatY = state.height * 0.52 + Math.sin(state.time * 0.00033) * state.height * 0.12;
+          state.targetX += (floatX - state.targetX) * 0.012;
+          state.targetY += (floatY - state.targetY) * 0.012;
+        }
+        state.velocityX = state.targetX - state.prevX;
+        state.velocityY = state.targetY - state.prevY;
+        state.speed = Math.hypot(state.velocityX, state.velocityY);
+
+        spawnHandParticles();
+        ctx.globalCompositeOperation = "lighter";
+        const alive = [];
+        for (const particle of state.particles) {
+          if (particle.update()) {
+            particle.draw();
+            alive.push(particle);
+          }
+        }
+        state.particles = alive;
+
+        drawCore();
+        requestAnimationFrame(animate);
+      }
+
+      function describeCameraError(error) {
+        if (!error) return "摄像头启动失败。";
+        if (error.name === "NotAllowedError") return "摄像头权限被拒绝。请在浏览器地址栏允许摄像头权限后刷新。";
+        if (error.name === "NotFoundError") return "没有检测到可用摄像头。";
+        if (error.name === "NotReadableError") return "摄像头可能被其他软件占用，请关闭占用摄像头的程序后刷新。";
+        if (error.name === "SecurityError") return "当前环境禁止摄像头。请使用 localhost 或 HTTPS 打开。";
+        return `${error.name || "Error"}: ${error.message || "摄像头或模型加载失败。"}`;
+      }
+
+      function wait(ms) {
+        return new Promise((resolve) => window.setTimeout(resolve, ms));
+      }
+
+      function waitForVideoReady(timeout = 5200) {
+        if (video.readyState >= 2 || video.srcObject) return Promise.resolve("ready");
+        return new Promise((resolve) => {
+          let done = false;
+          const finish = (value) => {
+            if (done) return;
+            done = true;
+            video.removeEventListener("loadedmetadata", onReady);
+            video.removeEventListener("canplay", onReady);
+            resolve(value);
+          };
+          const onReady = () => finish("ready");
+          video.addEventListener("loadedmetadata", onReady, { once: true });
+          video.addEventListener("canplay", onReady, { once: true });
+          window.setTimeout(() => finish("timeout"), timeout);
+        });
+      }
+
+      function onResults(results) {
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length) {
+          const landmarks = results.multiHandLandmarks[0];
+          const tip = landmarks[8];
+          const palm = landmarks[9] || tip;
+          state.rawX = tip.x * state.width;
+          state.rawY = tip.y * state.height;
+          state.handHue = 145 + palm.x * 110 + palm.y * 42;
+          state.lastHandSeenAt = performance.now();
+          state.handSeen = true;
+
+          if (state.modelReady) {
+            setStatus("", false, false);
+            setPill("已锁定食指指尖，挥动制造流星轨迹", true);
+          }
+        } else {
+          const withinGrace = performance.now() - state.lastHandSeenAt < state.handGraceMs;
+          state.handSeen = withinGrace;
+          if (state.modelReady) {
+            setPill(withinGrace ? "保持锁定中，继续移动食指" : "伸出食指开始操控粒子", withinGrace);
+          }
+        }
+      }
+
+      async function initMediaPipe() {
+        if (!window.Hands || !window.Camera) {
+          throw new Error("MediaPipe CDN 加载失败，请检查网络连接。");
+        }
+
+        const hands = new Hands({
+          locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+          maxNumHands: 1,
+          modelComplexity: 1,
+          minDetectionConfidence: 0.45,
+          minTrackingConfidence: 0.42,
+          selfieMode: true
+        });
+        hands.onResults(onResults);
+
+        const camera = new Camera(video, {
+          onFrame: async () => {
+            await hands.send({ image: video });
+          },
+          width: 1280,
+          height: 960
+        });
+
+        const startPromise = camera.start();
+        const startResult = await Promise.race([
+          startPromise.then(() => "started"),
+          waitForVideoReady(),
+          wait(6500).then(() => "timeout")
+        ]);
+        if (startResult === "timeout" && !video.srcObject && video.readyState < 2) {
+          throw new Error("摄像头启动超时。请确认浏览器已允许摄像头权限。");
+        }
+        state.modelReady = true;
+        setStatus("", false, false);
+        setPill("摄像头已开启，伸出食指开始操控", true);
+      }
+
+      async function boot() {
+        resizeNow();
+        requestAnimationFrame(animate);
+
+        try {
+          setStatus("正在请求摄像头权限及加载 AI 模型...", false, true);
+          setPill("等待摄像头与手势模型", false);
+          await initMediaPipe();
+        } catch (error) {
+          console.error(error);
+          state.handSeen = false;
+          setStatus(describeCameraError(error), true, true);
+          setPill("摄像头未启动，粒子保持环境漂浮", false);
+        }
+      }
+
+      window.addEventListener("resize", onResize, { passive: true });
+      boot();
+    })();
+  </script>
+</body>
+</html>
