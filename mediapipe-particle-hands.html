@@ -196,7 +196,7 @@
         lastFrame: performance.now(),
         particles: [],
         ambientTarget: 0,
-        maxParticles: 1500,
+        maxParticles: 2200,
         handSeen: false,
         modelReady: false,
         targetX: 0,
@@ -210,7 +210,7 @@
         speed: 0,
         handHue: 155,
         lastHandSeenAt: 0,
-        handGraceMs: 260,
+        handGraceMs: 420,
         lostFrames: 0,
         resizeTimer: 0
       };
@@ -286,9 +286,9 @@
           const velocityHue = Math.min(Math.hypot(this.vx, this.vy) * 7, 70);
           const hue = (this.hue + velocityHue + state.time * 0.018) % 360;
           const radius = Math.max(this.baseRadius * (0.25 + eased * 0.95), 0.1);
-          const alpha = Math.min(this.kind === "spark" ? 0.55 : 0.72, eased * (this.kind === "ambient" ? 0.42 : 0.55));
+          const alpha = Math.min(this.kind === "spark" ? 0.72 : 0.72, eased * (this.kind === "ambient" ? 0.42 : 0.72));
 
-          const glowRadius = radius * 3.2;
+          const glowRadius = radius * 4.2;
           const glow = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, glowRadius);
           glow.addColorStop(0, `hsla(${hue}, 100%, 68%, ${alpha})`);
           glow.addColorStop(0.28, `hsla(${hue}, 100%, 52%, ${alpha * 0.58})`);
@@ -299,7 +299,7 @@
           ctx.arc(this.x, this.y, glowRadius, 0, Math.PI * 2);
           ctx.fill();
 
-          ctx.fillStyle = `hsla(${hue + 18}, 100%, 66%, ${alpha})`;
+          ctx.fillStyle = `hsla(${hue + 18}, 100%, 72%, ${alpha})`;
           ctx.beginPath();
           ctx.arc(this.x, this.y, radius, 0, Math.PI * 2);
           ctx.fill();
@@ -371,7 +371,7 @@
         if (!state.handSeen) return;
 
         const speedBoost = clamp(state.speed / 26, 0, 8);
-        const count = Math.floor(4 + speedBoost * 4);
+        const count = Math.floor(7 + speedBoost * 6);
         const baseHue = state.handHue + Math.sin(state.time * 0.003) * 24;
         const moveAngle = Math.atan2(state.velocityY, state.velocityX);
 
@@ -390,7 +390,7 @@
             vx: Math.cos(angle) * force + state.velocityX * random(0.05, 0.18),
             vy: Math.sin(angle) * force + state.velocityY * random(0.05, 0.18),
             maxLife: random(36, 96 + speedBoost * 14),
-            radius: random(0.55, 1.7 + speedBoost * 0.16),
+            radius: random(0.8, 2.6 + speedBoost * 0.16),
             hue: baseHue + random(-38, 46) + speedBoost * 6,
             friction: 0.95
           });
@@ -406,7 +406,7 @@
               vx: -state.velocityX * random(0.05, 0.16) + random(-1.2, 1.2),
               vy: -state.velocityY * random(0.05, 0.16) + random(-1.2, 1.2),
               maxLife: random(62, 130),
-              radius: random(0.9, 2.4),
+              radius: random(1.2, 3.4),
               hue: baseHue + random(-22, 58),
               friction: 0.95
             });
@@ -425,9 +425,9 @@
         ctx.save();
         ctx.globalCompositeOperation = "lighter";
 
-        const haloRadius = r * 2.8;
+        const haloRadius = r * 3.8;
         const halo = ctx.createRadialGradient(state.targetX, state.targetY, 0, state.targetX, state.targetY, haloRadius);
-        halo.addColorStop(0, `hsla(${hue}, 100%, 66%, 0.14)`);
+        halo.addColorStop(0, `hsla(${hue}, 100%, 66%, 0.22)`);
         halo.addColorStop(0.34, `hsla(${hue + 55}, 100%, 58%, 0.07)`);
         halo.addColorStop(1, `hsla(${hue + 110}, 100%, 52%, 0)`);
         ctx.fillStyle = halo;
@@ -437,11 +437,11 @@
 
         ctx.translate(state.targetX, state.targetY);
         ctx.rotate(state.time * 0.003);
-        for (let i = 0; i < 8; i += 1) {
-          const angle = (i / 8) * Math.PI * 2;
+        for (let i = 0; i < 12; i += 1) {
+          const angle = (i / 12) * Math.PI * 2;
           const len = r * random(0.82, 1.7);
           ctx.strokeStyle = `hsla(${hue + i * 13}, 100%, 64%, 0.22)`;
-          ctx.lineWidth = 0.8;
+          ctx.lineWidth = 1.0;
           ctx.beginPath();
           ctx.moveTo(Math.cos(angle) * r * 0.42, Math.sin(angle) * r * 0.42);
           ctx.lineTo(Math.cos(angle) * len, Math.sin(angle) * len);
@@ -462,8 +462,8 @@
         state.prevX = state.targetX;
         state.prevY = state.targetY;
         if (state.handSeen) {
-          state.targetX += (state.rawX - state.targetX) * 0.15;
-          state.targetY += (state.rawY - state.targetY) * 0.15;
+          state.targetX += (state.rawX - state.targetX) * 0.28;
+          state.targetY += (state.rawY - state.targetY) * 0.28;
           state.lostFrames = 0;
         } else {
           state.lostFrames += 1;
@@ -527,9 +527,13 @@
           const landmarks = results.multiHandLandmarks[0];
           const tip = landmarks[8];
           const palm = landmarks[9] || tip;
-          state.rawX = tip.x * state.width;
-          state.rawY = tip.y * state.height;
-          state.handHue = 145 + palm.x * 110 + palm.y * 42;
+          const tipX = clamp(tip.x, 0.02, 0.98);
+          const tipY = clamp(tip.y, 0.02, 0.98);
+          const palmX = clamp(palm.x, 0.02, 0.98);
+          const palmY = clamp(palm.y, 0.02, 0.98);
+          state.rawX = tipX * state.width;
+          state.rawY = tipY * state.height;
+          state.handHue = 145 + palmX * 110 + palmY * 42;
           state.lastHandSeenAt = performance.now();
           state.handSeen = true;
 
@@ -558,8 +562,8 @@
         hands.setOptions({
           maxNumHands: 1,
           modelComplexity: 1,
-          minDetectionConfidence: 0.45,
-          minTrackingConfidence: 0.42,
+          minDetectionConfidence: 0.38,
+          minTrackingConfidence: 0.35,
           selfieMode: true
         });
         hands.onResults(onResults);
